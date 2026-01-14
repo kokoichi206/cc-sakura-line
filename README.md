@@ -1,6 +1,8 @@
 # cc-sakura-line
 
-A calm, minimal statusline for Claude Code — written in Rust, designed to bloom quietly in your terminal.
+A minimal statusline for Claude Code — written in Rust, designed to bloom quietly in your terminal.
+
+![preview](./docs/imgs/preview.png)
 
 **Sakura** (桜) are Japanese cherry blossoms: beautiful, fleeting, and understated. This statusline aims for the same feeling — present, but never loud.
 
