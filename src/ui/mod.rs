@@ -76,22 +76,32 @@ pub fn format_output(snapshot: &Snapshot) -> String {
 }
 
 fn build_lines<'a>(snapshot: &'a Snapshot, fill: bool) -> Vec<Vec<Segment<'a>>> {
+    // Row 1: Claude info
     let row1 = [
         snapshot.model.as_str(),
+        snapshot.version.as_str(),
+        snapshot.contributions.as_str(),
+        snapshot.session_clock.as_str(),
+    ];
+    // Row 2: Git info
+    let row2 = [
+        snapshot.repository.as_str(),
         snapshot.branch.as_str(),
         snapshot.git_changes.as_str(),
-        snapshot.now_clock.as_str(),
+        snapshot.ahead_behind.as_str(),
     ];
-    let row2 = [
-        snapshot.version.as_str(),
+    // Row 3: Context info
+    let row3 = [
         snapshot.context.as_str(),
         snapshot.context_remaining.as_str(),
-        snapshot.session_clock.as_str(),
+        "",
+        snapshot.now_clock.as_str(),
     ];
 
     let mut lines = Vec::new();
     lines.extend(split_segments(row1, fill));
     lines.extend(split_segments(row2, fill));
+    lines.extend(split_segments(row3, fill));
     lines
 }
 
@@ -289,15 +299,21 @@ fn render_line(
 fn shared_widths(snapshot: &Snapshot) -> [usize; 4] {
     let row1 = [
         snapshot.model.as_str(),
-        snapshot.branch.as_str(),
-        snapshot.git_changes.as_str(),
-        snapshot.now_clock.as_str(),
+        snapshot.version.as_str(),
+        snapshot.contributions.as_str(),
+        snapshot.session_clock.as_str(),
     ];
     let row2 = [
-        snapshot.version.as_str(),
+        snapshot.repository.as_str(),
+        snapshot.branch.as_str(),
+        snapshot.git_changes.as_str(),
+        snapshot.ahead_behind.as_str(),
+    ];
+    let row3 = [
         snapshot.context.as_str(),
         snapshot.context_remaining.as_str(),
-        snapshot.session_clock.as_str(),
+        "",
+        snapshot.now_clock.as_str(),
     ];
 
     let mut widths = [0usize; 4];
@@ -305,6 +321,9 @@ fn shared_widths(snapshot: &Snapshot) -> [usize; 4] {
         widths[idx] = widths[idx].max(natural_width(value, idx));
     }
     for (idx, value) in row2.iter().enumerate() {
+        widths[idx] = widths[idx].max(natural_width(value, idx));
+    }
+    for (idx, value) in row3.iter().enumerate() {
         widths[idx] = widths[idx].max(natural_width(value, idx));
     }
     widths
@@ -579,19 +598,23 @@ mod tests {
     fn format_output_contains_lines() {
         let snapshot = Snapshot {
             model: "model".to_string(),
-            branch: "main".to_string(),
-            git_changes: "clean".to_string(),
-            now_clock: "12:34:56".to_string(),
             version: "0.1.0".to_string(),
-            context: "10/100".to_string(),
-            context_remaining: "90% left".to_string(),
+            contributions: "🌲 9".to_string(),
             session_clock: "5h32m".to_string(),
+            repository: "owner/repo".to_string(),
+            branch: "main".to_string(),
+            git_changes: "+3 -1".to_string(),
+            ahead_behind: "↑1 ↓0".to_string(),
+            context: "10K/100K".to_string(),
+            context_remaining: "90% left".to_string(),
+            now_clock: "12:34:56".to_string(),
         };
 
         let output = format_output(&snapshot);
         let lines: Vec<&str> = output.trim_end().split('\n').collect();
-        assert!(lines.len() >= 2);
+        assert!(lines.len() >= 3);
         assert!(output.contains("model"));
         assert!(output.contains("0.1.0"));
+        assert!(output.contains("owner/repo"));
     }
 }
