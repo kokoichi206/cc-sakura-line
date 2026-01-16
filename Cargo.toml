@@ -5,6 +5,12 @@ edition = "2021"
 
 description = "A calm, minimal statusline for Claude Code"
 license = "MIT"
+repository = "https://github.com/kokoichi206/cc-sakura-line"
+homepage = "https://github.com/kokoichi206/cc-sakura-line"
+authors = ["kokoichi206"]
+keywords = ["claude-code", "statusline", "terminal", "tui"]
+categories = ["command-line-utilities"]
+readme = "README.md"
 
 [dependencies]
 anyhow = "1"
