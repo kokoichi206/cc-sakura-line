@@ -6,23 +6,103 @@ A minimal statusline for Claude Code — written in Rust, designed to bloom quie
 
 **Sakura** (桜) are Japanese cherry blossoms: beautiful, fleeting, and understated. This statusline aims for the same feeling — present, but never loud.
 
+## Requirements
+
+- **Rust** 1.70 or later
+- **gh** CLI (for GitHub contributions)
+- **Nerd Font** (recommended for Powerline glyphs)
+
+## Installation
+
+### Using cargo install (Recommended)
+
+```sh
+cargo install --git https://github.com/kokoichi206/cc-sakura-line.git
+```
+
+### From Source
+
+1. Clone the repository:
+
+   ```sh
+   git clone https://github.com/kokoichi206/cc-sakura-line.git
+   cd cc-sakura-line
+   ```
+
+2. Build the release binary:
+
+   ```sh
+   cargo build --release
+   ```
+
+3. Copy the binary to a directory in your PATH (optional):
+
+   ```sh
+   # Example: copy to ~/.local/bin
+   cp target/release/cc-sakura-line ~/.local/bin/
+
+   # Or create a symlink
+   ln -s "$(pwd)/target/release/cc-sakura-line" ~/.local/bin/cc-sakura-line
+   ```
+
+### Quick Start
+
+```sh
+# Clone and build
+git clone https://github.com/kokoichi206/cc-sakura-line.git
+cd cc-sakura-line
+cargo build --release
+
+# Preview the statusline
+./target/release/cc-sakura-line --preview
+```
+
+## Claude Code Setup
+
+To use this statusline with Claude Code, add the following to your `~/.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "/absolute/path/to/cc-sakura-line",
+    "padding": 0
+  }
+}
+```
+
+Replace `/absolute/path/to/cc-sakura-line` with the actual path to the binary. You can find it with:
+
+```sh
+which cc-sakura-line
+```
+
+After saving the configuration, restart Claude Code to see the new statusline.
+
 ## Layout
 
-Two rows, four segments each:
+Three rows, four segments each:
 
-**Row 1**
+**Row 1 (Claude)**
 
 - Model
+- Claude Code version
+- Today's GitHub contributions (`🌲 9`)
+- Session duration (`<1m`, `32m`, `5h32m`)
+
+**Row 2 (Git)**
+
+- Repository (`owner/repo`)
 - Branch
 - Git changes (`+n -m`)
+- Ahead/Behind (`↑2 ↓0`, `synced`)
+
+**Row 3 (Context)**
+
+- Context used (`45K/200K`)
+- Context remaining (`78% left`)
+- (empty)
 - Local time (`HH:MM:SS`)
-
-**Row 2**
-
-- Claude Code version
-- Context used (`used/total`)
-- Context remaining (`85% left`)
-- Session duration (`<1m`, `32m`, `5h32m`)
 
 ## Build
 
@@ -37,20 +117,6 @@ cargo run -- --preview
 ```
 
 Press `q` or `Esc` to exit.
-
-## Claude Code settings
-
-Add to `~/.claude/settings.json`:
-
-```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "/absolute/path/to/cc-sakura-line",
-    "padding": 0
-  }
-}
-```
 
 ## Width behavior
 
@@ -87,12 +153,23 @@ This tool reads from stdin:
 - `context_window.current_usage.*`
 - `cost.total_duration_ms`
 
-Git info is read from the current repository via `git`.
+Git info is read from the current repository via `git`:
+
+- Repository name (from `git remote get-url origin`)
+- Branch name
+- Line changes (`git diff --numstat`)
+- Ahead/Behind (`git status -b`)
+
+GitHub contributions are fetched via `gh` CLI (GraphQL API):
+
+- Today's contribution count (cached for 5 minutes at `~/.cache/cc-sakura-line/`)
 
 ## Optional env overrides
 
 - `CC_MODEL`: model name
 - `CC_VERSION`: version label
+- `CC_CONTRIBUTIONS`: today's contributions count (overrides GitHub API)
+- `CC_GITHUB_USER`: GitHub username (overrides auto-detection)
 - `CC_CONTEXT_LABEL`: context text (overrides used/total display)
 - `CC_CONTEXT_USED`: used context (number)
 - `CC_CONTEXT_TOTAL`: total context (number)
