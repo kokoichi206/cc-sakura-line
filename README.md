@@ -114,8 +114,9 @@ the rest stays grey. Both halves are solid blocks so the full length stays
 readable.
 
 Row 4 is a band, not a grid: the `5h` group sits left, the `7d` group is
-pushed right, and the band ends flush with the rows above it. A long
-countdown therefore never stretches the columns of rows 1–3.
+pushed right. The four rows share one right edge — whichever of the grid or
+the band is longer. Extra width goes to the last column of rows 1–3, not the
+short values in the other columns.
 
 Claude Code only sends quota data on subscription plans, and only once the
 session has seen its first API response. Until then row 4 shows `-`.

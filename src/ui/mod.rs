@@ -59,7 +59,7 @@ enum Cell {
     Spacer,
 }
 
-/// Grid rows share four column widths. Banner rows use natural width and must not feed column sizing.
+/// Grid rows share four column widths. A longer banner grows only the last column so every row shares one right edge.
 #[derive(Clone, Debug)]
 enum StatusRow {
     Grid([Cell; 4]),
@@ -162,15 +162,26 @@ impl Cell {
     }
 }
 
-/// Size columns from grid rows only. Mixing in the banner stretches short values.
+/// Size columns from grid rows. If the banner is longer, only the last column grows
+/// so short values in columns 0-2 are not stretched.
 fn grid_widths(rows: &[StatusRow]) -> [usize; 4] {
     let mut widths = [0usize; 4];
+    let mut banner_natural = 0usize;
     for row in rows {
-        if let StatusRow::Grid(cells) = row {
-            for (idx, cell) in cells.iter().enumerate() {
-                widths[idx] = widths[idx].max(cell.natural_width());
+        match row {
+            StatusRow::Grid(cells) => {
+                for (idx, cell) in cells.iter().enumerate() {
+                    widths[idx] = widths[idx].max(cell.natural_width());
+                }
+            }
+            StatusRow::Banner(cells) => {
+                banner_natural = banner_natural.max(cells.iter().map(Cell::natural_width).sum());
             }
         }
+    }
+    let grid_total: usize = widths.iter().sum();
+    if banner_natural > grid_total {
+        widths[3] += banner_natural - grid_total;
     }
     widths
 }
@@ -770,10 +781,8 @@ mod tests {
         let rows = status_rows(&filled_snapshot());
         let grid = grid_widths(&rows);
         let natural = banner_natural_width(&rows[3]);
-        assert!(
-            natural > grid.iter().sum::<usize>(),
-            "precondition: banner wider than grid"
-        );
+        let grid_total: usize = grid.iter().sum();
+        assert_eq!(grid_total, natural, "grid grows to the banner");
 
         let banner_total: usize = cell_widths(&rows[3], None, false, grid).iter().sum();
         assert_eq!(
@@ -783,14 +792,39 @@ mod tests {
     }
 
     #[test]
+    fn all_rows_share_the_longer_right_edge() {
+        let short_grid = filled_snapshot();
+        let short_rows = status_rows(&short_grid);
+        let short_grid_widths = grid_widths(&short_rows);
+        assert_eq!(
+            short_grid_widths.iter().sum::<usize>(),
+            banner_natural_width(&short_rows[3])
+        );
+        assert_eq!(
+            cell_widths(&short_rows[3], None, false, short_grid_widths)
+                .iter()
+                .sum::<usize>(),
+            short_grid_widths.iter().sum::<usize>()
+        );
+
+        let mut long_grid = filled_snapshot();
+        long_grid.repository = "a-fairly-long-owner/a-fairly-long-repo".to_string();
+        let long_rows = status_rows(&long_grid);
+        let long_grid_widths = grid_widths(&long_rows);
+        let grid_total: usize = long_grid_widths.iter().sum();
+        assert!(grid_total > banner_natural_width(&long_rows[3]));
+        assert_eq!(
+            cell_widths(&long_rows[3], None, false, long_grid_widths)
+                .iter()
+                .sum::<usize>(),
+            grid_total
+        );
+    }
+
+    #[test]
     fn banner_keeps_seven_day_when_spacer_is_zero() {
         let rows = status_rows(&filled_snapshot());
         let grid = grid_widths(&rows);
-        let natural = banner_natural_width(&rows[3]);
-        assert!(
-            natural > grid.iter().sum::<usize>(),
-            "precondition: banner wider than grid"
-        );
 
         let spacer = cell_widths(&rows[3], Some(80), false, grid)[2];
         assert_eq!(spacer, 0);
@@ -801,18 +835,31 @@ mod tests {
     }
 
     #[test]
-    fn banner_row_does_not_stretch_grid_columns() {
+    fn longer_banner_stretches_only_the_last_grid_column() {
         let mut snapshot = filled_snapshot();
         snapshot.branch = "short".to_string();
-        let narrow = grid_widths(&status_rows(&snapshot));
+        snapshot.five_hour = None;
+        snapshot.seven_day = None;
+        let without_gauges = grid_widths(&status_rows(&snapshot));
 
         snapshot.five_hour = Some(UsageGauge {
             used_percentage: 53.0,
             reset_eta: "a-very-long-reset-label-must-not-move-columns".to_string(),
         });
-        let with_long_banner = grid_widths(&status_rows(&snapshot));
+        snapshot.seven_day = Some(UsageGauge {
+            used_percentage: 9.0,
+            reset_eta: "6d5h".to_string(),
+        });
+        let with_gauges = grid_widths(&status_rows(&snapshot));
 
-        assert_eq!(narrow, with_long_banner);
+        assert_eq!(without_gauges[0], with_gauges[0]);
+        assert_eq!(without_gauges[1], with_gauges[1]);
+        assert_eq!(without_gauges[2], with_gauges[2]);
+        assert!(with_gauges[3] > without_gauges[3]);
+        assert_eq!(
+            with_gauges.iter().sum::<usize>(),
+            banner_natural_width(&status_rows(&snapshot)[3])
+        );
     }
 
     #[test]
