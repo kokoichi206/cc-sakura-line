@@ -3,12 +3,14 @@ mod clock;
 mod context;
 mod git;
 mod github;
+mod rate_limit;
 mod session;
 
 use serde_json::Value;
 use std::time::Instant;
 
 pub use claude::read_stdin_json;
+pub use rate_limit::UsageGauge;
 
 #[derive(Clone, Debug)]
 pub struct Snapshot {
@@ -26,11 +28,14 @@ pub struct Snapshot {
     pub context: String,
     pub context_remaining: String,
     pub now_clock: String,
+    pub five_hour: Option<UsageGauge>,
+    pub seven_day: Option<UsageGauge>,
 }
 
 pub fn collect_from_input(input: Option<&Value>) -> Snapshot {
     let git = git::snapshot();
     let context = context::from_input(input);
+    let rate_limit = rate_limit::from_input(input);
 
     Snapshot {
         // Row 1: Claude
@@ -47,12 +52,15 @@ pub fn collect_from_input(input: Option<&Value>) -> Snapshot {
         context: context.context,
         context_remaining: context.remaining,
         now_clock: clock::now_hms(),
+        five_hour: rate_limit.five_hour,
+        seven_day: rate_limit.seven_day,
     }
 }
 
 pub fn collect_preview(started_at: Instant) -> Snapshot {
     let git = git::snapshot();
     let context = context::from_input(None);
+    let rate_limit = rate_limit::from_input(None);
 
     Snapshot {
         // Row 1: Claude
@@ -69,5 +77,7 @@ pub fn collect_preview(started_at: Instant) -> Snapshot {
         context: context.context,
         context_remaining: context.remaining,
         now_clock: clock::now_hms(),
+        five_hour: rate_limit.five_hour,
+        seven_day: rate_limit.seven_day,
     }
 }

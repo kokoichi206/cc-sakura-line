@@ -81,7 +81,7 @@ After saving the configuration, restart Claude Code to see the new statusline.
 
 ## Layout
 
-Three rows, four segments each:
+The first three rows are a four-column grid. The fourth is a single band.
 
 **Row 1 (Claude)**
 
@@ -103,6 +103,24 @@ Three rows, four segments each:
 - Context remaining (`78% left`)
 - (empty)
 - Local time (`HH:MM:SS`)
+
+**Row 4 (Usage quotas)**
+
+- `5h` pill, then a gauge for the 5-hour window and its reset countdown
+- `7d` pill, then a gauge for the weekly window and its reset countdown
+
+Each gauge is 10 cells. The used part turns amber past 50% and red past 80%;
+the rest stays grey. Both halves are solid blocks so the full length stays
+readable.
+
+Row 4 is a band, not a grid: the `5h` group sits left, the `7d` group is
+pushed right, and the band ends flush with the rows above it. A long
+countdown therefore never stretches the columns of rows 1–3.
+
+Claude Code only sends quota data on subscription plans, and only once the
+session has seen its first API response. Until then row 4 shows `-`.
+Per-model quotas (Opus, Sonnet, Fable) are not part of the payload; check
+them with `/usage`.
 
 ## Build
 
@@ -152,6 +170,11 @@ This tool reads from stdin:
 - `context_window.context_window_size`
 - `context_window.current_usage.*`
 - `cost.total_duration_ms`
+- `rate_limits.five_hour.used_percentage` / `rate_limits.five_hour.resets_at`
+- `rate_limits.seven_day.used_percentage` / `rate_limits.seven_day.resets_at`
+
+`resets_at` is a unix timestamp in **seconds**. See the
+[status line data fields](https://code.claude.com/docs/en/statusline.md).
 
 Git info is read from the current repository via `git`:
 
@@ -174,10 +197,16 @@ GitHub contributions are fetched via `gh` CLI (GraphQL API):
 - `CC_CONTEXT_USED`: used context (number)
 - `CC_CONTEXT_TOTAL`: total context (number)
 - `CC_CONTEXT_REMAINING`: remaining context text (overrides computed percent)
+- `CC_RATE_FIVE_HOUR_USED`: 5-hour usage percent (number, also drives the gauge)
+- `CC_RATE_FIVE_HOUR_RESET`: 5-hour reset text (overrides computed countdown)
+- `CC_RATE_SEVEN_DAY_USED`: weekly usage percent (number, also drives the gauge)
+- `CC_RATE_SEVEN_DAY_RESET`: weekly reset text (overrides computed countdown)
 - `CC_STATUSLINE_WIDTH`: width override (same as `--width`)
 - `CC_STATUSLINE_RESERVED`: reserved right-space (same as `--reserved`)
 - `CC_STATUSLINE_FILL`: `1` to fill full width (same as `--fill`)
 
 ## Fonts
+
+The gauges use a Block Element (`█` U+2588), which ordinary monospace fonts already cover.
 
 The rounded ends use Powerline glyphs (`` ``). A Nerd Font (or Powerline-compatible font) is recommended.
