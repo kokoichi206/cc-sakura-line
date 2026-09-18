@@ -59,6 +59,15 @@ pub fn lookup_u64(root: &Value, path: &[&str]) -> Option<u64> {
     }
 }
 
+pub fn lookup_f64(root: &Value, path: &[&str]) -> Option<f64> {
+    let value = lookup_value(root, path)?;
+    match value {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
 fn lookup_value<'a>(root: &'a Value, path: &[&str]) -> Option<&'a Value> {
     let mut current = root;
     for key in path {

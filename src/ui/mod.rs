@@ -11,7 +11,7 @@ use std::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::data::Snapshot;
+use crate::data::{Snapshot, UsageGauge};
 
 const SAKURA: Color = Color::Rgb(241, 157, 181);
 const SAKURA_FG: Color = Color::Rgb(35, 30, 30);
@@ -23,155 +23,225 @@ const MID_BG: Color = Color::Rgb(55, 55, 55);
 const MID_FG: Color = Color::Rgb(220, 220, 220);
 const PLUS_FG: Color = Color::Rgb(98, 201, 98);
 const MINUS_FG: Color = Color::Rgb(235, 110, 110);
+const GAUGE_LOW: Color = Color::Rgb(154, 199, 122);
+const GAUGE_MID: Color = Color::Rgb(226, 168, 92);
+const GAUGE_HIGH: Color = Color::Rgb(235, 110, 110);
+/// 未使用分。セル背景より明るく保たないとゲージの全長が読めなくなる。
+const GAUGE_EMPTY_FG: Color = Color::Rgb(90, 90, 90);
+
 const LINE_PREFIX: &str = " ";
 const COL_PCTS: [u16; 4] = [25, 25, 25, 25];
-const ROUND_LEFT: &str = "";
-const ROUND_RIGHT: &str = "";
+/// Powerline Extra Symbols の半円。private use area の文字はリテラルのままだと
+/// 編集や転送で欠落しうるため、コードポイントで書く。
+const ROUND_LEFT: &str = "\u{e0b6}";
+const ROUND_RIGHT: &str = "\u{e0b4}";
 const PILL_BORDER_WIDTH: usize = 2;
 
-type Segment<'a> = (usize, &'a str);
+const GAUGE_CELLS: usize = 10;
+/// 使用分と未使用分は同じ字形を色だけ変えて敷き詰める。
+/// 点描の字形は端末やフォントによって薄くなり、全長が読めなくなる。
+const GAUGE_CELL: char = '█';
+const GAUGE_MID_THRESHOLD: f64 = 50.0;
+const GAUGE_HIGH_THRESHOLD: f64 = 80.0;
+
+/// 列 index で色を決めない。行の並べ替えでも装飾はセルに付いて回る。
+#[derive(Clone, Debug)]
+enum Cell {
+    SakuraPill(String),
+    GreenPill(String),
+    Block(String),
+    GitChanges(String),
+    Gauge {
+        used_percentage: f64,
+        label: String,
+    },
+    /// 帯の右端をグリッド行に揃える詰め物。余りが無いときは幅 0 で描画を飛ばす。
+    Spacer,
+}
+
+/// グリッド行は 4 列で幅を共有する。帯行は自然幅で繋ぎ、列幅計算に入れない。
+#[derive(Clone, Debug)]
+enum StatusRow {
+    Grid([Cell; 4]),
+    Banner(Vec<Cell>),
+}
 
 pub fn render(frame: &mut Frame<'_>, snapshot: &Snapshot) {
     let area = frame.size();
     let area = padded_area(area);
     let width = area.width as usize;
     let fill = should_fill();
-    let shared = if fill {
-        None
-    } else {
-        Some(shared_widths(snapshot))
-    };
+    let rows = status_rows(snapshot);
+    let widths = grid_widths(&rows);
 
-    let lines = build_lines(snapshot, fill)
-        .into_iter()
-        .map(|segments| render_line(Some(width), &segments, fill, shared))
+    let lines = rows
+        .iter()
+        .map(|row| render_line(row, Some(width), fill, widths))
         .collect::<Vec<_>>();
 
     let total_lines = lines.len().min(area.height as usize);
     let constraints = vec![Constraint::Length(1); total_lines];
-    let rows = Layout::default()
+    let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(area);
 
     let base_style = Style::default().bg(ROW_BG).fg(ROW_FG);
     for (idx, line) in lines.into_iter().take(total_lines).enumerate() {
-        frame.render_widget(Paragraph::new(line).style(base_style), rows[idx]);
+        frame.render_widget(Paragraph::new(line).style(base_style), layout[idx]);
     }
 }
 
 pub fn format_output(snapshot: &Snapshot) -> String {
     let width = terminal_width();
     let fill = should_fill();
-    let shared = if fill {
-        None
-    } else {
-        Some(shared_widths(snapshot))
-    };
-    let lines = build_lines(snapshot, fill)
-        .into_iter()
-        .map(|segments| format_row(&segments, width, fill, shared))
+    let rows = status_rows(snapshot);
+    let widths = grid_widths(&rows);
+
+    let lines = rows
+        .iter()
+        .map(|row| format_row(row, width, fill, widths))
         .collect::<Vec<_>>();
     format!("{}\n", lines.join("\n"))
 }
 
-fn build_lines<'a>(snapshot: &'a Snapshot, fill: bool) -> Vec<Vec<Segment<'a>>> {
-    // Row 1: Claude info
-    let row1 = [
-        snapshot.model.as_str(),
-        snapshot.version.as_str(),
-        snapshot.contributions.as_str(),
-        snapshot.session_clock.as_str(),
-    ];
-    // Row 2: Git info
-    let row2 = [
-        snapshot.repository.as_str(),
-        snapshot.branch.as_str(),
-        snapshot.git_changes.as_str(),
-        snapshot.ahead_behind.as_str(),
-    ];
-    // Row 3: Context info
-    let row3 = [
-        snapshot.context.as_str(),
-        snapshot.context_remaining.as_str(),
-        "",
-        snapshot.now_clock.as_str(),
-    ];
-
-    let mut lines = Vec::new();
-    lines.extend(split_segments(row1, fill));
-    lines.extend(split_segments(row2, fill));
-    lines.extend(split_segments(row3, fill));
-    lines
+fn status_rows(snapshot: &Snapshot) -> Vec<StatusRow> {
+    vec![
+        StatusRow::Grid([
+            Cell::SakuraPill(snapshot.model.clone()),
+            Cell::Block(snapshot.version.clone()),
+            Cell::GitChanges(snapshot.contributions.clone()),
+            Cell::GreenPill(snapshot.session_clock.clone()),
+        ]),
+        StatusRow::Grid([
+            Cell::SakuraPill(snapshot.repository.clone()),
+            Cell::Block(snapshot.branch.clone()),
+            Cell::GitChanges(snapshot.git_changes.clone()),
+            Cell::GreenPill(snapshot.ahead_behind.clone()),
+        ]),
+        StatusRow::Grid([
+            Cell::SakuraPill(snapshot.context.clone()),
+            Cell::Block(snapshot.context_remaining.clone()),
+            Cell::GitChanges(String::new()),
+            Cell::GreenPill(snapshot.now_clock.clone()),
+        ]),
+        StatusRow::Banner(vec![
+            Cell::SakuraPill("5h".to_string()),
+            gauge_cell(snapshot.five_hour.as_ref()),
+            Cell::Spacer,
+            Cell::GreenPill("7d".to_string()),
+            gauge_cell(snapshot.seven_day.as_ref()),
+        ]),
+    ]
 }
 
-fn split_segments<'a>(row: [&'a str; 4], fill: bool) -> Vec<Vec<Segment<'a>>> {
-    let segments: Vec<Segment<'a>> = row
-        .iter()
-        .enumerate()
-        .map(|(idx, value)| (idx, *value))
-        .collect();
-
-    if fill {
-        return vec![segments];
+fn gauge_cell(gauge: Option<&UsageGauge>) -> Cell {
+    match gauge {
+        Some(gauge) => Cell::Gauge {
+            used_percentage: gauge.used_percentage,
+            label: format!(
+                "{}% used {}",
+                gauge.used_percentage.round() as u64,
+                gauge.reset_eta
+            ),
+        },
+        None => Cell::Block("-".to_string()),
     }
-
-    vec![segments]
 }
 
-fn format_row(
-    segments: &[Segment<'_>],
-    width_opt: Option<usize>,
+impl Cell {
+    fn natural_width(&self) -> usize {
+        match self {
+            Cell::SakuraPill(text) | Cell::GreenPill(text) => {
+                display_width(&padded(text)) + PILL_BORDER_WIDTH
+            }
+            Cell::Block(text) | Cell::GitChanges(text) => display_width(&padded(text)),
+            Cell::Gauge { label, .. } => GAUGE_CELLS + display_width(&padded(label)) + 1,
+            Cell::Spacer => 0,
+        }
+    }
+}
+
+/// グリッド行だけで列幅を決める。帯行を混ぜると短い値が引き伸ばされる。
+fn grid_widths(rows: &[StatusRow]) -> [usize; 4] {
+    let mut widths = [0usize; 4];
+    for row in rows {
+        if let StatusRow::Grid(cells) = row {
+            for (idx, cell) in cells.iter().enumerate() {
+                widths[idx] = widths[idx].max(cell.natural_width());
+            }
+        }
+    }
+    widths
+}
+
+fn cell_widths(
+    row: &StatusRow,
+    total_width: Option<usize>,
     fill: bool,
-    shared_widths: Option<[usize; 4]>,
-) -> String {
-    let widths = if fill {
-        width_opt.map(|w| column_widths(w.saturating_sub(LINE_PREFIX.len())))
-    } else {
-        shared_widths
-    };
+    grid: [usize; 4],
+) -> Vec<usize> {
+    match row {
+        StatusRow::Grid(_) => match (fill, total_width) {
+            (true, Some(total)) => column_widths(total.saturating_sub(LINE_PREFIX.len())).to_vec(),
+            _ => grid.to_vec(),
+        },
+        StatusRow::Banner(cells) => {
+            let mut widths: Vec<usize> = cells.iter().map(Cell::natural_width).collect();
+            let target = match (fill, total_width) {
+                (true, Some(total)) => total.saturating_sub(LINE_PREFIX.len()),
+                _ => grid.iter().sum(),
+            };
+            let fixed: usize = widths.iter().sum();
+            if let Some(idx) = cells.iter().position(|cell| matches!(cell, Cell::Spacer)) {
+                widths[idx] = target.saturating_sub(fixed);
+            }
+            widths
+        }
+    }
+}
+
+fn cells_of(row: &StatusRow) -> &[Cell] {
+    match row {
+        StatusRow::Grid(cells) => cells.as_slice(),
+        StatusRow::Banner(cells) => cells.as_slice(),
+    }
+}
+
+fn format_row(row: &StatusRow, total_width: Option<usize>, fill: bool, grid: [usize; 4]) -> String {
+    let widths = cell_widths(row, total_width, fill, grid);
     let mut out = String::new();
-    let row_style = ansi_fg_bg(ROW_FG, ROW_BG);
-    out.push_str(&row_style);
+    out.push_str(&ansi_fg_bg(ROW_FG, ROW_BG));
     out.push_str(LINE_PREFIX);
 
-    let mut remaining = width_opt
+    let mut remaining = total_width
         .map(|w| w.saturating_sub(LINE_PREFIX.len()))
         .unwrap_or(usize::MAX);
+    let mut used = 0usize;
 
-    for (idx, value) in segments.iter() {
-        let width = match widths {
-            Some(cols) => {
-                let mut w = cols[*idx];
-                if width_opt.is_some() {
-                    w = w.min(remaining);
-                }
-                w
-            }
-            None => {
-                let natural = natural_width(value, *idx);
-                if width_opt.is_some() {
-                    natural.min(remaining)
-                } else {
-                    natural
-                }
-            }
+    for (cell, natural) in cells_of(row).iter().zip(widths) {
+        let width = if total_width.is_some() {
+            natural.min(remaining)
+        } else {
+            natural
         };
         if width == 0 {
+            continue;
+        }
+        out.push_str(&ansi_cell(cell, width));
+        used += width;
+        remaining = remaining.saturating_sub(width);
+        if total_width.is_some() && remaining == 0 {
             break;
         }
-        let segment = match *idx {
-            0 => ansi_pill(value, width, SAKURA, SAKURA_FG),
-            3 => ansi_pill(value, width, GREEN, GREEN_FG),
-            2 => ansi_git_changes(value, width, MID_BG, MID_FG),
-            _ => ansi_block(value, width, MID_BG, MID_FG),
-        };
-        out.push_str(&segment);
+    }
 
-        if width_opt.is_some() {
-            remaining = remaining.saturating_sub(width);
-            if remaining == 0 {
-                break;
+    if fill {
+        if let Some(total) = total_width {
+            let pad = total.saturating_sub(LINE_PREFIX.len()).saturating_sub(used);
+            if pad > 0 {
+                out.push_str(&ansi_fg_bg(ROW_FG, ROW_BG));
+                out.extend(std::iter::repeat_n(' ', pad));
             }
         }
     }
@@ -180,115 +250,49 @@ fn format_row(
     out
 }
 
-fn padded_area(area: Rect) -> Rect {
-    if area.width <= 1 {
-        return area;
-    }
-    Rect {
-        x: area.x + 1,
-        y: area.y,
-        width: area.width - 1,
-        height: area.height,
-    }
-}
-
-fn column_widths(total_width: usize) -> [usize; 4] {
-    let usable = total_width;
-    let mut widths = [0usize; 4];
-    let mut used = 0usize;
-
-    for (idx, pct) in COL_PCTS.iter().enumerate() {
-        let w = usable * (*pct as usize) / 100;
-        widths[idx] = w;
-        used += w;
-    }
-
-    if used < usable {
-        widths[3] += usable - used;
-    }
-
-    widths
-}
-
-fn fit_cell(text: &str, width: usize) -> String {
-    if width == 0 {
-        return String::new();
-    }
-
-    let trimmed = trim_to_width(text, width);
-    let mut out = trimmed;
-    let pad = width.saturating_sub(display_width(&out));
-    out.extend(std::iter::repeat_n(' ', pad));
-    out
-}
-
-fn segment_text(value: &str) -> String {
-    format!(" {} ", value)
-}
-
 fn render_line(
-    width_opt: Option<usize>,
-    segments: &[Segment<'_>],
+    row: &StatusRow,
+    total_width: Option<usize>,
     fill: bool,
-    shared_widths: Option<[usize; 4]>,
+    grid: [usize; 4],
 ) -> Line<'static> {
-    let widths = if fill {
-        width_opt.map(|w| column_widths(w.saturating_sub(LINE_PREFIX.len())))
-    } else {
-        shared_widths
-    };
-    let mut spans = Vec::with_capacity(10);
-
+    let widths = cell_widths(row, total_width, fill, grid);
+    let mut spans = Vec::with_capacity(12);
     spans.push(Span::styled(
         LINE_PREFIX,
         Style::default().bg(ROW_BG).fg(ROW_FG),
     ));
 
-    let mut remaining = width_opt
+    let mut remaining = total_width
         .map(|w| w.saturating_sub(LINE_PREFIX.len()))
         .unwrap_or(usize::MAX);
+    let mut used = 0usize;
 
-    for (idx, value) in segments.iter() {
-        let width = match widths {
-            Some(cols) => {
-                let mut w = cols[*idx];
-                if width_opt.is_some() {
-                    w = w.min(remaining);
-                }
-                w
-            }
-            None => {
-                let natural = natural_width(value, *idx);
-                if width_opt.is_some() {
-                    natural.min(remaining)
-                } else {
-                    natural
-                }
-            }
+    for (cell, natural) in cells_of(row).iter().zip(widths) {
+        let width = if total_width.is_some() {
+            natural.min(remaining)
+        } else {
+            natural
         };
         if width == 0 {
+            continue;
+        }
+        spans.extend(cell_spans(cell, width));
+        used += width;
+        remaining = remaining.saturating_sub(width);
+        if total_width.is_some() && remaining == 0 {
             break;
         }
+    }
 
-        let (bg, fg) = match *idx {
-            0 => (SAKURA, SAKURA_FG),
-            3 => (GREEN, GREEN_FG),
-            _ => (MID_BG, MID_FG),
-        };
-
-        let segment = if *idx == 0 || *idx == 3 {
-            pill_spans(value, width, bg, fg)
-        } else if *idx == 2 {
-            git_changes_spans(value, width, bg, fg)
-        } else {
-            block_spans(value, width, bg, fg)
-        };
-        spans.extend(segment);
-
-        if width_opt.is_some() {
-            remaining = remaining.saturating_sub(width);
-            if remaining == 0 {
-                break;
+    if fill {
+        if let Some(total) = total_width {
+            let pad = total.saturating_sub(LINE_PREFIX.len()).saturating_sub(used);
+            if pad > 0 {
+                spans.push(Span::styled(
+                    " ".repeat(pad),
+                    Style::default().bg(ROW_BG).fg(ROW_FG),
+                ));
             }
         }
     }
@@ -296,62 +300,118 @@ fn render_line(
     Line::from(spans)
 }
 
-fn shared_widths(snapshot: &Snapshot) -> [usize; 4] {
-    let row1 = [
-        snapshot.model.as_str(),
-        snapshot.version.as_str(),
-        snapshot.contributions.as_str(),
-        snapshot.session_clock.as_str(),
-    ];
-    let row2 = [
-        snapshot.repository.as_str(),
-        snapshot.branch.as_str(),
-        snapshot.git_changes.as_str(),
-        snapshot.ahead_behind.as_str(),
-    ];
-    let row3 = [
-        snapshot.context.as_str(),
-        snapshot.context_remaining.as_str(),
-        "",
-        snapshot.now_clock.as_str(),
-    ];
+fn ansi_cell(cell: &Cell, width: usize) -> String {
+    match cell {
+        Cell::SakuraPill(text) => ansi_pill(text, width, SAKURA, SAKURA_FG),
+        Cell::GreenPill(text) => ansi_pill(text, width, GREEN, GREEN_FG),
+        Cell::Block(text) => ansi_block(text, width, MID_BG, MID_FG),
+        Cell::GitChanges(text) => ansi_git_changes(text, width, MID_BG, MID_FG),
+        Cell::Gauge {
+            used_percentage,
+            label,
+        } => ansi_gauge(*used_percentage, label, width),
+        Cell::Spacer => ansi_spacer(width),
+    }
+}
 
-    let mut widths = [0usize; 4];
-    for (idx, value) in row1.iter().enumerate() {
-        widths[idx] = widths[idx].max(natural_width(value, idx));
+fn ansi_spacer(width: usize) -> String {
+    let mut out = String::new();
+    out.push_str(&ansi_fg_bg_color(MID_FG, MID_BG));
+    out.extend(std::iter::repeat_n(' ', width));
+    out.push_str(&ansi_fg_bg(ROW_FG, ROW_BG));
+    out
+}
+
+fn cell_spans(cell: &Cell, width: usize) -> Vec<Span<'static>> {
+    match cell {
+        Cell::SakuraPill(text) => pill_spans(text, width, SAKURA, SAKURA_FG),
+        Cell::GreenPill(text) => pill_spans(text, width, GREEN, GREEN_FG),
+        Cell::Block(text) => block_spans(text, width, MID_BG, MID_FG),
+        Cell::GitChanges(text) => git_changes_spans(text, width, MID_BG, MID_FG),
+        Cell::Gauge {
+            used_percentage,
+            label,
+        } => gauge_spans(*used_percentage, label, width),
+        Cell::Spacer => vec![Span::styled(
+            " ".repeat(width),
+            Style::default().fg(MID_FG).bg(MID_BG),
+        )],
     }
-    for (idx, value) in row2.iter().enumerate() {
-        widths[idx] = widths[idx].max(natural_width(value, idx));
+}
+
+fn gauge_color(used_percentage: f64) -> Color {
+    if used_percentage >= GAUGE_HIGH_THRESHOLD {
+        GAUGE_HIGH
+    } else if used_percentage >= GAUGE_MID_THRESHOLD {
+        GAUGE_MID
+    } else {
+        GAUGE_LOW
     }
-    for (idx, value) in row3.iter().enumerate() {
-        widths[idx] = widths[idx].max(natural_width(value, idx));
+}
+
+fn gauge_filled(used_percentage: f64) -> usize {
+    ((used_percentage / 100.0) * GAUGE_CELLS as f64).round() as usize
+}
+
+fn ansi_gauge(used_percentage: f64, label: &str, width: usize) -> String {
+    if width <= GAUGE_CELLS + 1 {
+        return ansi_block(label, width, MID_BG, MID_FG);
     }
-    widths
+
+    let filled = gauge_filled(used_percentage).min(GAUGE_CELLS);
+    let mut out = String::new();
+    out.push_str(&ansi_fg_bg_color(MID_FG, MID_BG));
+    out.push(' ');
+    out.push_str(&ansi_fg_bg_color(gauge_color(used_percentage), MID_BG));
+    out.extend(std::iter::repeat_n(GAUGE_CELL, filled));
+    out.push_str(&ansi_fg_bg_color(GAUGE_EMPTY_FG, MID_BG));
+    out.extend(std::iter::repeat_n(GAUGE_CELL, GAUGE_CELLS - filled));
+    out.push_str(&ansi_fg_bg_color(MID_FG, MID_BG));
+    out.push_str(&fit_cell(&padded(label), width - GAUGE_CELLS - 1));
+    out.push_str(&ansi_fg_bg(ROW_FG, ROW_BG));
+    out
+}
+
+fn gauge_spans(used_percentage: f64, label: &str, width: usize) -> Vec<Span<'static>> {
+    if width <= GAUGE_CELLS + 1 {
+        return block_spans(label, width, MID_BG, MID_FG);
+    }
+
+    let filled = gauge_filled(used_percentage).min(GAUGE_CELLS);
+    vec![
+        Span::styled(" ", Style::default().fg(MID_FG).bg(MID_BG)),
+        Span::styled(
+            GAUGE_CELL.to_string().repeat(filled),
+            Style::default().fg(gauge_color(used_percentage)).bg(MID_BG),
+        ),
+        Span::styled(
+            GAUGE_CELL.to_string().repeat(GAUGE_CELLS - filled),
+            Style::default().fg(GAUGE_EMPTY_FG).bg(MID_BG),
+        ),
+        Span::styled(
+            fit_cell(&padded(label), width - GAUGE_CELLS - 1),
+            Style::default().fg(MID_FG).bg(MID_BG),
+        ),
+    ]
 }
 
 fn pill_spans(value: &str, width: usize, bg: Color, fg: Color) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
     if width < PILL_BORDER_WIDTH {
         return block_spans(value, width, bg, fg);
     }
-    let inner_width = width.saturating_sub(PILL_BORDER_WIDTH);
-    let inner = fit_cell(&segment_text(value), inner_width);
-
-    spans.push(Span::styled(ROUND_LEFT, Style::default().fg(bg).bg(ROW_BG)));
-    spans.push(Span::styled(inner, Style::default().fg(fg).bg(bg)));
-    spans.push(Span::styled(
-        ROUND_RIGHT,
-        Style::default().fg(bg).bg(ROW_BG),
-    ));
-
-    spans
+    let inner = fit_cell(&padded(value), width - PILL_BORDER_WIDTH);
+    vec![
+        Span::styled(ROUND_LEFT, Style::default().fg(bg).bg(ROW_BG)),
+        Span::styled(inner, Style::default().fg(fg).bg(bg)),
+        Span::styled(ROUND_RIGHT, Style::default().fg(bg).bg(ROW_BG)),
+    ]
 }
 
 fn block_spans(value: &str, width: usize, bg: Color, fg: Color) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    let text = fit_cell(&segment_text(value), width);
-    spans.push(Span::styled(text, Style::default().fg(fg).bg(bg)));
-    spans
+    vec![Span::styled(
+        fit_cell(&padded(value), width),
+        Style::default().fg(fg).bg(bg),
+    )]
 }
 
 fn git_changes_spans(value: &str, width: usize, bg: Color, fg: Color) -> Vec<Span<'static>> {
@@ -359,7 +419,7 @@ fn git_changes_spans(value: &str, width: usize, bg: Color, fg: Color) -> Vec<Spa
         return Vec::new();
     }
 
-    let text = fit_cell(&segment_text(value), width);
+    let text = fit_cell(&padded(value), width);
     let mut spans = Vec::new();
     let mut buffer = String::new();
     let mut chars = text.chars().peekable();
@@ -400,10 +460,8 @@ fn ansi_pill(value: &str, width: usize, bg: Color, fg: Color) -> String {
     if width < PILL_BORDER_WIDTH {
         return ansi_block(value, width, bg, fg);
     }
-    let inner_width = width.saturating_sub(PILL_BORDER_WIDTH);
-    let inner = fit_cell(&segment_text(value), inner_width);
+    let inner = fit_cell(&padded(value), width - PILL_BORDER_WIDTH);
     let mut out = String::new();
-
     out.push_str(&ansi_fg_bg_color(bg, ROW_BG));
     out.push_str(ROUND_LEFT);
     out.push_str(&ansi_fg_bg_color(fg, bg));
@@ -419,10 +477,9 @@ fn ansi_block(value: &str, width: usize, bg: Color, fg: Color) -> String {
         return String::new();
     }
 
-    let text = fit_cell(&segment_text(value), width);
     let mut out = String::new();
     out.push_str(&ansi_fg_bg_color(fg, bg));
-    out.push_str(&text);
+    out.push_str(&fit_cell(&padded(value), width));
     out.push_str(&ansi_fg_bg(ROW_FG, ROW_BG));
     out
 }
@@ -432,7 +489,7 @@ fn ansi_git_changes(value: &str, width: usize, bg: Color, fg: Color) -> String {
         return String::new();
     }
 
-    let text = fit_cell(&segment_text(value), width);
+    let text = fit_cell(&padded(value), width);
     let mut out = String::new();
     out.push_str(&ansi_fg_bg_color(fg, bg));
 
@@ -463,13 +520,48 @@ fn ansi_git_changes(value: &str, width: usize, bg: Color, fg: Color) -> String {
     out
 }
 
-fn natural_width(value: &str, idx: usize) -> usize {
-    let base = display_width(&segment_text(value));
-    if idx == 0 || idx == 3 {
-        base + 2
-    } else {
-        base
+fn padded(text: &str) -> String {
+    format!(" {} ", text)
+}
+
+fn padded_area(area: Rect) -> Rect {
+    if area.width <= 1 {
+        return area;
     }
+    Rect {
+        x: area.x + 1,
+        y: area.y,
+        width: area.width - 1,
+        height: area.height,
+    }
+}
+
+fn column_widths(total_width: usize) -> [usize; 4] {
+    let mut widths = [0usize; 4];
+    let mut used = 0usize;
+
+    for (idx, pct) in COL_PCTS.iter().enumerate() {
+        let w = total_width * (*pct as usize) / 100;
+        widths[idx] = w;
+        used += w;
+    }
+
+    if used < total_width {
+        widths[3] += total_width - used;
+    }
+
+    widths
+}
+
+fn fit_cell(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+
+    let mut out = trim_to_width(text, width);
+    let pad = width.saturating_sub(display_width(&out));
+    out.extend(std::iter::repeat_n(' ', pad));
+    out
 }
 
 fn ansi_fg_bg(fg: Color, bg: Color) -> String {
@@ -591,12 +683,14 @@ fn stty_cols(tty: Option<&File>) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::format_output;
-    use crate::data::Snapshot;
+    use super::{
+        cell_widths, format_output, format_row, gauge_filled, grid_widths, status_rows, Cell,
+        StatusRow, ROUND_LEFT, ROUND_RIGHT,
+    };
+    use crate::data::{Snapshot, UsageGauge};
 
-    #[test]
-    fn format_output_contains_lines() {
-        let snapshot = Snapshot {
+    fn filled_snapshot() -> Snapshot {
+        Snapshot {
             model: "model".to_string(),
             version: "0.1.0".to_string(),
             contributions: "🌲 9".to_string(),
@@ -608,13 +702,146 @@ mod tests {
             context: "10K/100K".to_string(),
             context_remaining: "90% left".to_string(),
             now_clock: "12:34:56".to_string(),
-        };
+            five_hour: Some(UsageGauge {
+                used_percentage: 53.0,
+                reset_eta: "2h48m".to_string(),
+            }),
+            seven_day: Some(UsageGauge {
+                used_percentage: 9.0,
+                reset_eta: "6d5h".to_string(),
+            }),
+        }
+    }
 
-        let output = format_output(&snapshot);
+    fn banner_natural_width(row: &StatusRow) -> usize {
+        let StatusRow::Banner(cells) = row else {
+            panic!("帯行であること");
+        };
+        cells.iter().map(Cell::natural_width).sum()
+    }
+
+    #[test]
+    fn format_output_contains_lines() {
+        let output = format_output(&filled_snapshot());
         let lines: Vec<&str> = output.trim_end().split('\n').collect();
-        assert!(lines.len() >= 3);
+        assert!(lines.len() >= 4);
         assert!(output.contains("model"));
         assert!(output.contains("0.1.0"));
         assert!(output.contains("owner/repo"));
+        assert!(output.contains("53% used 2h48m"));
+        assert!(output.contains("7d"));
+        assert!(output.contains("9% used 6d5h"));
+    }
+
+    #[test]
+    fn rate_limit_row_is_a_banner() {
+        let rows = status_rows(&filled_snapshot());
+        assert_eq!(rows.len(), 4);
+
+        let StatusRow::Banner(cells) = &rows[3] else {
+            panic!("4 行目は帯行であること");
+        };
+        assert!(matches!(&cells[0], Cell::SakuraPill(text) if text == "5h"));
+        assert!(matches!(&cells[1], Cell::Gauge { label, .. } if label == "53% used 2h48m"));
+        assert!(matches!(&cells[2], Cell::Spacer));
+        assert!(matches!(&cells[3], Cell::GreenPill(text) if text == "7d"));
+        assert!(matches!(&cells[4], Cell::Gauge { label, .. } if label == "9% used 6d5h"));
+    }
+
+    #[test]
+    fn banner_row_ends_flush_with_the_grid() {
+        let mut snapshot = filled_snapshot();
+        snapshot.repository = "a-fairly-long-owner/a-fairly-long-repo".to_string();
+
+        let rows = status_rows(&snapshot);
+        let grid = grid_widths(&rows);
+        let grid_total: usize = grid.iter().sum();
+        let banner_total: usize = cell_widths(&rows[3], None, false, grid).iter().sum();
+
+        assert!(
+            grid_total > banner_natural_width(&rows[3]),
+            "前提: グリッドの方が広いこと"
+        );
+        assert_eq!(banner_total, grid_total);
+    }
+
+    #[test]
+    fn banner_row_keeps_content_when_wider_than_the_grid() {
+        let rows = status_rows(&filled_snapshot());
+        let grid = grid_widths(&rows);
+        let natural = banner_natural_width(&rows[3]);
+        assert!(
+            natural > grid.iter().sum::<usize>(),
+            "前提: 帯の方が広いこと"
+        );
+
+        let banner_total: usize = cell_widths(&rows[3], None, false, grid).iter().sum();
+        assert_eq!(banner_total, natural, "詰め物が 0 になり内容は縮まない");
+    }
+
+    #[test]
+    fn banner_keeps_seven_day_when_spacer_is_zero() {
+        let rows = status_rows(&filled_snapshot());
+        let grid = grid_widths(&rows);
+        let natural = banner_natural_width(&rows[3]);
+        assert!(
+            natural > grid.iter().sum::<usize>(),
+            "前提: 帯の方が広いこと"
+        );
+
+        let spacer = cell_widths(&rows[3], Some(80), false, grid)[2];
+        assert_eq!(spacer, 0);
+
+        let line = format_row(&rows[3], Some(80), false, grid);
+        assert!(line.contains("7d"), "幅 0 の Spacer で 7d を落とさない");
+        assert!(line.contains("9% used 6d5h"));
+    }
+
+    #[test]
+    fn banner_row_does_not_stretch_grid_columns() {
+        let mut snapshot = filled_snapshot();
+        snapshot.branch = "short".to_string();
+        let narrow = grid_widths(&status_rows(&snapshot));
+
+        snapshot.five_hour = Some(UsageGauge {
+            used_percentage: 53.0,
+            reset_eta: "とても長いリセット表記になっても列は動かない".to_string(),
+        });
+        let with_long_banner = grid_widths(&status_rows(&snapshot));
+
+        assert_eq!(narrow, with_long_banner);
+    }
+
+    #[test]
+    fn missing_rate_limits_fall_back_to_placeholder() {
+        let mut snapshot = filled_snapshot();
+        snapshot.five_hour = None;
+        snapshot.seven_day = None;
+
+        let rows = status_rows(&snapshot);
+        let StatusRow::Banner(cells) = &rows[3] else {
+            panic!("4 行目は帯行であること");
+        };
+        assert!(matches!(&cells[1], Cell::Block(text) if text == "-"));
+        assert!(matches!(&cells[4], Cell::Block(text) if text == "-"));
+    }
+
+    #[test]
+    fn pills_keep_their_rounded_ends() {
+        assert_eq!(ROUND_LEFT.chars().count(), 1);
+        assert_eq!(ROUND_RIGHT.chars().count(), 1);
+
+        let output = format_output(&filled_snapshot());
+        assert!(output.contains(ROUND_LEFT), "左の丸端が描かれること");
+        assert!(output.contains(ROUND_RIGHT), "右の丸端が描かれること");
+    }
+
+    #[test]
+    fn gauge_filled_rounds_to_cells() {
+        assert_eq!(gauge_filled(0.0), 0);
+        assert_eq!(gauge_filled(4.9), 0);
+        assert_eq!(gauge_filled(5.0), 1);
+        assert_eq!(gauge_filled(53.0), 5);
+        assert_eq!(gauge_filled(100.0), 10);
     }
 }
