@@ -6,7 +6,7 @@ use std::{
 
 use crate::data::claude;
 
-/// 利用枠 1 つ分。ゲージを描くために使用率を数値のまま持つ。
+/// One quota window. Keep used_percentage numeric so the gauge can be drawn.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UsageGauge {
     pub used_percentage: f64,
@@ -102,7 +102,7 @@ fn format_reset_eta(total_secs: u64) -> String {
     }
 }
 
-/// `resets_at` は unix 秒。ミリ秒と取り違えると桁が 1000 倍ずれる。
+/// `resets_at` is unix seconds. Treating it as milliseconds shifts the countdown by 1000x.
 fn unix_now() -> Option<u64> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -150,7 +150,7 @@ mod tests {
             "CC_RATE_TEST_UNSET_RESET",
             Some(1_800_000_000),
         )
-        .expect("five_hour が読めること");
+        .expect("five_hour present");
 
         assert_eq!(five_hour.used_percentage, 53.4);
         assert_eq!(five_hour.reset_eta, "2h41m");
@@ -166,7 +166,7 @@ mod tests {
             "CC_RATE_TEST_UNSET_RESET",
             Some(0),
         )
-        .expect("five_hour が読めること");
+        .expect("five_hour present");
         assert_eq!(five_hour.used_percentage, 100.0);
     }
 
@@ -180,7 +180,7 @@ mod tests {
             "CC_RATE_TEST_UNSET_RESET",
             Some(0),
         )
-        .expect("seven_day が読めること");
+        .expect("seven_day present");
         assert_eq!(seven_day.reset_eta, "-");
     }
 

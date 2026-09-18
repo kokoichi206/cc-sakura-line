@@ -26,25 +26,25 @@ const MINUS_FG: Color = Color::Rgb(235, 110, 110);
 const GAUGE_LOW: Color = Color::Rgb(154, 199, 122);
 const GAUGE_MID: Color = Color::Rgb(226, 168, 92);
 const GAUGE_HIGH: Color = Color::Rgb(235, 110, 110);
-/// 未使用分。セル背景より明るく保たないとゲージの全長が読めなくなる。
+/// Unused fill. Must stay brighter than the cell background or the gauge length is unreadable.
 const GAUGE_EMPTY_FG: Color = Color::Rgb(90, 90, 90);
 
 const LINE_PREFIX: &str = " ";
 const COL_PCTS: [u16; 4] = [25, 25, 25, 25];
-/// Powerline Extra Symbols の半円。private use area の文字はリテラルのままだと
-/// 編集や転送で欠落しうるため、コードポイントで書く。
+/// Powerline Extra Symbols semicircles. Write them as code points;
+/// PUA literals can drop in edit or transfer.
 const ROUND_LEFT: &str = "\u{e0b6}";
 const ROUND_RIGHT: &str = "\u{e0b4}";
 const PILL_BORDER_WIDTH: usize = 2;
 
 const GAUGE_CELLS: usize = 10;
-/// 使用分と未使用分は同じ字形を色だけ変えて敷き詰める。
-/// 点描の字形は端末やフォントによって薄くなり、全長が読めなくなる。
+/// Used and unused cells share one glyph and differ only by color.
+/// Dotted glyphs wash out on some fonts, so the full length becomes unreadable.
 const GAUGE_CELL: char = '█';
 const GAUGE_MID_THRESHOLD: f64 = 50.0;
 const GAUGE_HIGH_THRESHOLD: f64 = 80.0;
 
-/// 列 index で色を決めない。行の並べ替えでも装飾はセルに付いて回る。
+/// Color lives on the cell, not the column index, so row layout can change without breaking decoration.
 #[derive(Clone, Debug)]
 enum Cell {
     SakuraPill(String),
@@ -55,11 +55,11 @@ enum Cell {
         used_percentage: f64,
         label: String,
     },
-    /// 帯の右端をグリッド行に揃える詰め物。余りが無いときは幅 0 で描画を飛ばす。
+    /// Pad so the band's right edge lines up with the grid. Skip drawing when leftover width is 0.
     Spacer,
 }
 
-/// グリッド行は 4 列で幅を共有する。帯行は自然幅で繋ぎ、列幅計算に入れない。
+/// Grid rows share four column widths. Banner rows use natural width and must not feed column sizing.
 #[derive(Clone, Debug)]
 enum StatusRow {
     Grid([Cell; 4]),
@@ -162,7 +162,7 @@ impl Cell {
     }
 }
 
-/// グリッド行だけで列幅を決める。帯行を混ぜると短い値が引き伸ばされる。
+/// Size columns from grid rows only. Mixing in the banner stretches short values.
 fn grid_widths(rows: &[StatusRow]) -> [usize; 4] {
     let mut widths = [0usize; 4];
     for row in rows {
@@ -715,7 +715,7 @@ mod tests {
 
     fn banner_natural_width(row: &StatusRow) -> usize {
         let StatusRow::Banner(cells) = row else {
-            panic!("帯行であること");
+            panic!("expected a banner row");
         };
         cells.iter().map(Cell::natural_width).sum()
     }
@@ -739,7 +739,7 @@ mod tests {
         assert_eq!(rows.len(), 4);
 
         let StatusRow::Banner(cells) = &rows[3] else {
-            panic!("4 行目は帯行であること");
+            panic!("row 4 is a banner");
         };
         assert!(matches!(&cells[0], Cell::SakuraPill(text) if text == "5h"));
         assert!(matches!(&cells[1], Cell::Gauge { label, .. } if label == "53% used 2h48m"));
@@ -760,7 +760,7 @@ mod tests {
 
         assert!(
             grid_total > banner_natural_width(&rows[3]),
-            "前提: グリッドの方が広いこと"
+            "precondition: grid wider than banner"
         );
         assert_eq!(banner_total, grid_total);
     }
@@ -772,11 +772,14 @@ mod tests {
         let natural = banner_natural_width(&rows[3]);
         assert!(
             natural > grid.iter().sum::<usize>(),
-            "前提: 帯の方が広いこと"
+            "precondition: banner wider than grid"
         );
 
         let banner_total: usize = cell_widths(&rows[3], None, false, grid).iter().sum();
-        assert_eq!(banner_total, natural, "詰め物が 0 になり内容は縮まない");
+        assert_eq!(
+            banner_total, natural,
+            "spacer is 0; content does not shrink"
+        );
     }
 
     #[test]
@@ -786,14 +789,14 @@ mod tests {
         let natural = banner_natural_width(&rows[3]);
         assert!(
             natural > grid.iter().sum::<usize>(),
-            "前提: 帯の方が広いこと"
+            "precondition: banner wider than grid"
         );
 
         let spacer = cell_widths(&rows[3], Some(80), false, grid)[2];
         assert_eq!(spacer, 0);
 
         let line = format_row(&rows[3], Some(80), false, grid);
-        assert!(line.contains("7d"), "幅 0 の Spacer で 7d を落とさない");
+        assert!(line.contains("7d"), "zero-width spacer must not drop 7d");
         assert!(line.contains("9% used 6d5h"));
     }
 
@@ -805,7 +808,7 @@ mod tests {
 
         snapshot.five_hour = Some(UsageGauge {
             used_percentage: 53.0,
-            reset_eta: "とても長いリセット表記になっても列は動かない".to_string(),
+            reset_eta: "a-very-long-reset-label-must-not-move-columns".to_string(),
         });
         let with_long_banner = grid_widths(&status_rows(&snapshot));
 
@@ -820,7 +823,7 @@ mod tests {
 
         let rows = status_rows(&snapshot);
         let StatusRow::Banner(cells) = &rows[3] else {
-            panic!("4 行目は帯行であること");
+            panic!("row 4 is a banner");
         };
         assert!(matches!(&cells[1], Cell::Block(text) if text == "-"));
         assert!(matches!(&cells[4], Cell::Block(text) if text == "-"));
@@ -832,8 +835,8 @@ mod tests {
         assert_eq!(ROUND_RIGHT.chars().count(), 1);
 
         let output = format_output(&filled_snapshot());
-        assert!(output.contains(ROUND_LEFT), "左の丸端が描かれること");
-        assert!(output.contains(ROUND_RIGHT), "右の丸端が描かれること");
+        assert!(output.contains(ROUND_LEFT), "left rounded cap is drawn");
+        assert!(output.contains(ROUND_RIGHT), "right rounded cap is drawn");
     }
 
     #[test]
